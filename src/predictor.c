@@ -46,15 +46,13 @@ int global_BHT_index;
 //         ---------------------------//
 //custom //Perceptron Branch Predictor//
 //         ---------------------------//
-int number_per = 128;
-int addr_per;
-int i = 0;
-int per_g_bits = 15;
-int per_pc_bits = 7;
-int8_t theta = (int8_t)((1.93*15)+7);
-int8_t* bias;
-int8_t** weights;
-int per_value;
+int table_length_perceptron;
+int num_weights;
+int **weight_table;
+int *bias_table;
+int theta;
+int max_weight_limit;
+int min_weight_limit;
 
 
 //------------------------------------//
@@ -88,19 +86,62 @@ init_predictor()
       memset(selector, WN, sizeof(uint8_t) * (1 << ghistoryBits));
       break;
     case CUSTOM:
-      bias = malloc(number_per * sizeof(int8_t));
-      memset(bias, (int8_t)1, number_per * sizeof(int8_t));
-      weights = malloc(number_per * sizeof(int8_t*));
-      for(i = 0; i < number_per; i++)
-      {
-        weights[i] = malloc(per_g_bits * sizeof(int8_t));
-	memset(weights[i], (int8_t)0, per_g_bits * sizeof(int8_t));
-      }
-      break;
+      //Use perceptron predictor with @table_length_perceptron table length, @num_weights weights,
+			//1 bias term and 8 bits for weight values
+			table_length_perceptron = 256;
+			num_weights = 31;
+			max_weight_limit = 127;
+			min_weight_limit = -128;
+			weight_table = (int**) malloc(sizeof(int*) * table_length_perceptron);
+			for(int i=0; i<table_length_perceptron; i++)
+				weight_table[i] = (int*) calloc(num_weights, sizeof(int));
+			bias_table = (int*) calloc(table_length_perceptron, sizeof(int));
+			
+			//Set training threshold as @theta
+			theta = 32;
+			break;
     default:
       break;
   }
 }
+
+//Calculate the index of the perceptron table by using the last @table_length_perceptron bits of @pc
+int calculate_weight_index(uint32_t pc)
+{
+	return pc & (table_length_perceptron - 1);
+}
+
+//Calculate the perceptron sum of a perceptron indexed by pc
+int calculate_perceptron_sum(uint32_t pc)
+{
+	int weight_index = calculate_weight_index(pc);
+	int sum = bias_table[weight_index];
+	for(int i=0; i<num_weights; i++)
+		sum = ((g_history>>i)&1) ? sum + weight_table[weight_index][i] : sum - weight_table[weight_index][i];
+	return sum;
+}
+
+//Limit the weight values between -128 and 127 so that a max 8 bits are used for weight
+void set_weight_limit(int *weight_value)
+{
+	if(*weight_value > max_weight_limit){
+    *weight_value = *weight_value - 1;
+  }
+	else if(*weight_value < min_weight_limit) {
+    *weight_value = *weight_value + 1;
+  }
+}
+
+//Return TAKEN if the perceptron sum >=0, otherwise return NOTTAKEN
+int make_perceptron_prediction(uint32_t pc)
+{
+	return (calculate_perceptron_sum(pc) >= 0) ? TAKEN : NOTTAKEN;
+}
+
+// Make a prediction for conditional branch instruction at PC 'pc'
+// Returning TAKEN indicates a prediction of taken; returning NOTTAKEN
+// indicates a prediction of not taken
+//
 
 // Make a prediction for conditional branch instruction at PC 'pc'
 // Returning TAKEN indicates a prediction of taken; returning NOTTAKEN
@@ -151,22 +192,7 @@ make_prediction(uint32_t pc)
       } 
       else {return l_outcome;}
     case CUSTOM:
-      addr_per = pc & ((1 << per_pc_bits) - 1);
-      per_value = bias[addr_per];
-      g_history &= ((1 << per_g_bits) - 1);
-      for(i = 0; i < per_g_bits; i++)
-      {
-        if(((g_history >> i) & 1) == 0)
-        {
-          per_value -= weights[addr_per][i];
-        }
-        else
-        {
-          per_value += weights[addr_per][i];
-        }
-      }
-      if (per_value >= 0) return TAKEN;
-      else {return NOTTAKEN;}
+      return make_perceptron_prediction(pc);
     default:
       break;
   }
@@ -235,39 +261,30 @@ void tournament_train(uint32_t pc, uint8_t outcome) {
     g_history |= outcome;
 }
 
-void per_train(uint32_t pc, uint8_t outcome)
+//Train the perceptron predictor
+void train_perceptron(uint32_t pc, uint8_t outcome)
 {
-	per_value = abs(per_value);
-	int sign;
-	if(per_value >= 0) sign = 1;
-	else{sign = -1;}
-	if((sign != (outcome ? 1 : -1)) || (per_value <= theta))
+	int weight_index = calculate_weight_index(pc);
+	int perceptron_sum = calculate_perceptron_sum(pc);
+	int perceptron_outcome = perceptron_sum>=0;
+	
+	//Train predictor only if prediction != outcome or perceptron sum is less than threshold 
+	if (abs(perceptron_sum) <= theta || perceptron_outcome != outcome) 
 	{
-		if((outcome == 1) && (bias[addr_per] < 127))		
-		  bias[addr_per] = bias[addr_per] + 1;
-		else if((outcome == 0) && (bias[addr_per] > -127))
-		  bias[addr_per] = bias[addr_per] - 1;
-		for(i = 0; i < per_g_bits; i++)
-		{
-		  if(outcome == ((g_history >> i) & 1))
-		  {
-		    if(weights[addr_per][i] < 127)
-		    {
-		      weights[addr_per][i] += 1;
-		    }
-		  }
-		    
-		  else if(outcome != (((g_history & (1 << i)) >> i) & 1))
-	          {
-		    if(weights[addr_per][i] > -127)
-		    {
-		      weights[addr_per][i] -= 1;
-		    }
-		  }
-		}
-	}
-	g_history = (((g_history << 1) | (outcome)) & ((1 << per_g_bits) - 1));
+		//Update bias table entries
+		bias_table[weight_index] += (outcome==TAKEN) ? 1 : -1; 
+		set_weight_limit(&bias_table[weight_index]);
+    	
+    	//Update perceptron table entries 
+    	for (int i=0; i<num_weights; i++) 
+    	{
+    		weight_table[weight_index][i] += (((g_history>>i) & 1)==outcome) ? 1 : -1;
+    		set_weight_limit(&weight_table[weight_index][i]);
+    	}
+  	}
+  	g_history = (g_history<<1 | outcome) & ((1<<num_weights) - 1);
 }
+
     
   
 
@@ -290,7 +307,7 @@ train_predictor(uint32_t pc, uint8_t outcome)
       tournament_train(pc, outcome);
       break;
     case CUSTOM:
-      per_train(pc, outcome);
+      train_perceptron(pc, outcome);
       break;
     default:
       break;
