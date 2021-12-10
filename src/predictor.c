@@ -8,10 +8,6 @@
 #include <stdio.h>
 #include "predictor.h"
 #include <string.h>
-//
-// TODO:Student Information
-//
-
 
 //------------------------------------//
 //      Predictor Configuration       //
