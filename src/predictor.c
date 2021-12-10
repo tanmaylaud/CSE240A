@@ -88,8 +88,8 @@ init_predictor()
     case CUSTOM:
       //Use perceptron predictor with @table_length_perceptron table length, @num_weights weights,
 			//1 bias term and 8 bits for weight values
-			table_length_perceptron = 256;
-			num_weights = 31;
+			//table_length_perceptron = 256; // 2^a
+			//num_weights = 31; // 2^b
 			max_weight_limit = 127;
 			min_weight_limit = -128;
 			weight_table = (int**) malloc(sizeof(int*) * table_length_perceptron);
@@ -98,7 +98,7 @@ init_predictor()
 			bias_table = (int*) calloc(table_length_perceptron, sizeof(int));
 			
 			//Set training threshold as @theta
-			theta = 32;
+			//theta = 32;
 			break;
     default:
       break;
