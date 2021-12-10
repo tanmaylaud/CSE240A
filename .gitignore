@@ -1,2 +1,5 @@
 *.o
 src/predictor
+.DS_Store
+.idea/
+src/.ipynb_checkpoints/
